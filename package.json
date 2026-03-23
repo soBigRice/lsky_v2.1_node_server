@@ -1,0 +1,23 @@
+{
+  "name": "lsky-album-proxy",
+  "version": "1.0.0",
+  "description": "A Node.js service based on Lsky Pro 2.1 for proxying albums and images.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "keywords": [
+    "lsky",
+    "lskypro",
+    "nodejs",
+    "proxy"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0"
+  }
+}
