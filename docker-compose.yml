@@ -1,0 +1,13 @@
+services:
+  lsky-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lsky-album-proxy
+    env_file:
+      - .env
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

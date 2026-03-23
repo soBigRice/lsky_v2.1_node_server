@@ -1,3 +1,5 @@
+const fs = require("fs");
+const path = require("path");
 const dotenv = require("dotenv");
 
 dotenv.config();
@@ -26,6 +28,15 @@ function parseBoolean(value, fallback) {
 function parseInteger(value, fallback) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function resolveFilePath(value, fallback) {
+  const input =
+    value === undefined || value === null || value === ""
+      ? fallback
+      : value;
+
+  return path.resolve(process.cwd(), input);
 }
 
 const config = {
@@ -66,6 +77,10 @@ const config = {
   lskyPublicUserAlbumsPath:
     process.env.LSKY_PUBLIC_USER_ALBUMS_PATH || "/explore/users/{username}/albums",
   accessToken: process.env.LSKY_ACCESS_TOKEN || "",
+  tokenStoragePath: resolveFilePath(
+    process.env.LSKY_TOKEN_STORAGE_PATH,
+    "data/lsky-token.json"
+  ),
   loginField: process.env.LSKY_LOGIN_FIELD || "email",
   apiTokenField:
     process.env.LSKY_API_TOKEN_FIELD ||
@@ -90,7 +105,29 @@ function canUsePrivateMode() {
     return Boolean(config.username && config.password);
   }
 
-  return Boolean(config.accessToken || (config.username && config.password));
+  return Boolean(
+    config.accessToken ||
+      hasStoredToken(config.tokenStoragePath) ||
+      (config.username && config.password)
+  );
+}
+
+function hasStoredToken(filePath) {
+  try {
+    const content = fs.readFileSync(filePath, "utf8").trim();
+    if (!content) {
+      return false;
+    }
+
+    if (!content.startsWith("{")) {
+      return true;
+    }
+
+    const payload = JSON.parse(content);
+    return Boolean(payload && typeof payload.token === "string" && payload.token);
+  } catch (_error) {
+    return false;
+  }
 }
 
 module.exports = {

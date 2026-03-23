@@ -38,7 +38,7 @@ app.get("/api/albums", async (req, res, next) => {
       return res.status(500).json({
         success: false,
         message:
-          "Private mode is not configured. Set LSKY_ACCESS_TOKEN or LSKY_USERNAME/LSKY_PASSWORD."
+          "Private mode is not configured. Set LSKY_ACCESS_TOKEN, provide a cached token file, or set LSKY_USERNAME/LSKY_PASSWORD."
       });
     }
 
@@ -59,7 +59,7 @@ app.get("/api/images", async (req, res, next) => {
       return res.status(500).json({
         success: false,
         message:
-          "Private mode is not configured. Set the required Lsky credentials first."
+          "Private mode is not configured. Set LSKY_ACCESS_TOKEN, provide a cached token file, or set LSKY_USERNAME/LSKY_PASSWORD."
       });
     }
 
@@ -80,7 +80,7 @@ app.get("/api/albums/:albumId/images", async (req, res, next) => {
       return res.status(500).json({
         success: false,
         message:
-          "Private mode is not configured. Set the required Lsky credentials first."
+          "Private mode is not configured. Set LSKY_ACCESS_TOKEN, provide a cached token file, or set LSKY_USERNAME/LSKY_PASSWORD."
       });
     }
 
@@ -132,9 +132,7 @@ app.use((error, _req, res, _next) => {
 });
 
 app.listen(config.port, () => {
-  console.log(
-    `lsky-album-proxy is listening on http://127.0.0.1:${config.port}`
-  );
+  console.log(`lsky-album-proxy is listening on port ${config.port}`);
 });
 
 function filterQuery(query) {

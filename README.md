@@ -4,7 +4,7 @@
 
 ## 简介
 
-本项目定位为 `Lsky Pro 2.1` 的中间层代理服务，主要用于解决前端无法直接安全访问兰空图床私有接口的问题。服务端负责完成 `API Token` 获取、网页登录、`session cookie` 维护以及数据转发，前端只需要请求这个 Node.js 服务，就可以获取相册列表、图片列表和指定相册下的图片数据。
+本项目定位为 `Lsky Pro 2.1` 的中间层代理服务，主要用于解决前端无法直接安全访问兰空图床私有接口的问题。服务端负责完成 `API Token` 获取、自动缓存、本地失效重试、网页登录以及数据转发，前端只需要请求这个 Node.js 服务，就可以获取相册列表、图片列表和指定相册下的图片数据。
 
 ## 上游项目
 
@@ -30,9 +30,10 @@
 
 - 支持 `token` 直连 Lsky Pro
 - 支持 Lsky Pro 2.1 的 API token
+- 支持账号密码自动换取 token
+- 支持 token 本地缓存，服务重启后继续复用
+- 支持 token 失效后自动重新获取
 - 支持 Lsky Pro 2.1 的表单登录 + session cookie
-- 支持自动优先 token，失败后回退 session
-- 没有 `token` 时，支持账号密码自动登录
 - 提供私有相册列表接口
 - 提供公开用户相册列表接口
 - 自带基础 CORS，前端可直接调用
@@ -71,6 +72,7 @@ LSKY_API_PRIVATE_IMAGES_PATH=/images
 LSKY_PUBLIC_USER_ALBUMS_PATH=/explore/users/{username}/albums
 
 LSKY_ACCESS_TOKEN=
+LSKY_TOKEN_STORAGE_PATH=./data/lsky-token.json
 
 LSKY_LOGIN_TYPE=username
 LSKY_USERNAME=your-email@example.com
@@ -91,15 +93,43 @@ npm start
 http://127.0.0.1:3000
 ```
 
+## Docker 部署
+
+项目根目录已经提供了 `Dockerfile` 和 `docker-compose.yml`，直接使用现有 `.env` 即可：
+
+```bash
+docker compose up -d --build
+```
+
+查看状态：
+
+```bash
+docker compose ps
+docker compose logs -f lsky-server
+```
+
+停止服务：
+
+```bash
+docker compose down
+```
+
+说明：
+
+- Compose 会读取项目根目录 `.env`
+- 容器内服务端口和宿主机映射都跟随 `PORT`，默认是 `3000`
+- `./data` 会挂载到容器内 `/app/data`，用于持久化缓存的 token
+- 健康检查会访问容器内的 `/health`
+
 ## 接口
 
 ### 1. 获取私有相册列表
 
 这个接口会按 `LSKY_AUTH_MODE` 工作：
 
-- `auto`: 先请求 `/api/v1/tokens` 拿 token，再请求 `/api/v1/albums`；失败则回退到网页登录
+- `auto`: 优先使用 `LSKY_ACCESS_TOKEN` 或本地缓存 token；没有 token 时用账号密码请求 `/api/v1/tokens`；token 失效后自动重新获取
 - `session`: 先访问 `/login`，提交表单，拿到 session cookie 后请求 `/user/albums`
-- `api`: 使用 `LSKY_ACCESS_TOKEN` 或账号密码去请求 `/api/v1/tokens`
+- `api`: 行为和 `auto` 一致，但语义上表示你只希望走 token 链路
 
 ```bash
 curl "http://127.0.0.1:3000/api/albums?page=1&per_page=20&q="
@@ -195,7 +225,7 @@ LSKY_API_PRIVATE_IMAGES_PATH=/images
 
 - 新版 API 模式：改 `LSKY_AUTH_MODE=api`
 - Lsky Pro 2.1 网页登录模式：保留 `LSKY_AUTH_MODE=session`
-- 自动优先 token：使用 `LSKY_AUTH_MODE=auto`
+- 自动 token 模式：使用 `LSKY_AUTH_MODE=auto`
 
 如果你的接口不是这些路径，可以直接改 `.env` 里的这些值：
 
@@ -221,13 +251,14 @@ LSKY_PRIVATE_ALBUMS_PATH=/albums
 
 ## 推荐用法
 
-最稳妥的方式不是让服务每次自动登录，而是：
+默认推荐用法是：
 
-1. 在 Lsky Pro 后台创建一个长期可用的 Token
-2. 把这个 Token 配到 `LSKY_ACCESS_TOKEN`
-3. 博客统一请求这个 Node.js 服务
+1. 如果你已经有长期 Token，直接填到 `LSKY_ACCESS_TOKEN`
+2. 如果没有，就配置 `LSKY_USERNAME` 和 `LSKY_PASSWORD`
+3. 服务会自动获取 token 并写入 `LSKY_TOKEN_STORAGE_PATH`
+4. 之后优先使用本地缓存 token，失效后再自动重新获取
 
-这样更稳定，也更适合长期部署。
+这样更稳定，也更适合长期部署和 Docker 重启场景。
 
 ## 开源协议
 

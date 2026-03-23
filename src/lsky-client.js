@@ -1,3 +1,6 @@
+const fs = require("fs/promises");
+const path = require("path");
+
 class LskyHttpError extends Error {
   constructor(message, statusCode, payload) {
     super(message);
@@ -10,11 +13,13 @@ class LskyHttpError extends Error {
 class LskyClient {
   constructor(config) {
     this.config = config;
-    this.cachedToken = config.accessToken || "";
+    this.cachedToken = "";
     this.cookieJar = new Map();
-    this.loginPromise = null;
-    this.resolvedAuthMode =
-      config.authMode === "auto" ? null : config.authMode;
+    this.tokenPromise = null;
+    this.sessionPromise = null;
+    this.storedTokenLoaded = false;
+    this.storedToken = "";
+    this.ignoreConfiguredAccessToken = false;
   }
 
   async getPrivateAlbums(query = {}) {
@@ -50,30 +55,13 @@ class LskyClient {
 
   async requestWithAuth(options = {}) {
     const { apiPath, sessionPath, query = {} } = options;
-    const mode = this.resolvedAuthMode || this.config.authMode;
+    const mode = this.config.authMode;
 
     if (mode === "session") {
       return this.requestWithSession(sessionPath, { query });
     }
 
-    if (mode === "api") {
-      return this.requestWithApiAuth(apiPath, { query });
-    }
-
-    try {
-      const payload = await this.requestWithApiAuth(apiPath, { query });
-      this.resolvedAuthMode = "api";
-      return payload;
-    } catch (apiError) {
-      try {
-        const payload = await this.requestWithSession(sessionPath, { query });
-        this.resolvedAuthMode = "session";
-        return payload;
-      } catch (sessionError) {
-        sessionError.cause = apiError;
-        throw sessionError;
-      }
-    }
+    return this.requestWithApiAuth(apiPath, { query });
   }
 
   async requestWithApiAuth(path, options = {}) {
@@ -87,15 +75,15 @@ class LskyClient {
       });
     } catch (error) {
       const shouldRetry =
-        !this.config.accessToken &&
         error instanceof LskyHttpError &&
-        [401, 403].includes(error.statusCode);
+        [401, 403].includes(error.statusCode) &&
+        this.canLoginWithCredentials();
 
       if (!shouldRetry) {
         throw error;
       }
 
-      this.cachedToken = "";
+      await this.invalidateAccessToken();
       const refreshedToken = await this.getAccessToken(true);
 
       return this.request(path, {
@@ -145,10 +133,6 @@ class LskyClient {
   }
 
   async ensureSession(forceRefresh = false) {
-    if (this.resolvedAuthMode === "api") {
-      return;
-    }
-
     if (!this.config.username || !this.config.password) {
       throw new Error(
         "Session mode requires both LSKY_USERNAME and LSKY_PASSWORD."
@@ -159,41 +143,51 @@ class LskyClient {
       return;
     }
 
-    if (!forceRefresh && this.loginPromise) {
-      return this.loginPromise;
+    if (!forceRefresh && this.sessionPromise) {
+      return this.sessionPromise;
     }
 
-    this.loginPromise = this.loginWithSession().finally(() => {
-      this.loginPromise = null;
+    this.sessionPromise = this.loginWithSession().finally(() => {
+      this.sessionPromise = null;
     });
 
-    return this.loginPromise;
+    return this.sessionPromise;
   }
 
   async getAccessToken(forceRefresh = false) {
-    if (this.config.accessToken) {
-      return this.config.accessToken;
-    }
-
     if (!forceRefresh && this.cachedToken) {
       return this.cachedToken;
     }
 
+    if (!forceRefresh) {
+      const configuredToken = this.getConfiguredAccessToken();
+      if (configuredToken) {
+        this.cachedToken = configuredToken;
+        return configuredToken;
+      }
+
+      const storedToken = await this.loadStoredToken();
+      if (storedToken) {
+        this.cachedToken = storedToken;
+        return storedToken;
+      }
+    }
+
     if (!this.config.username || !this.config.password) {
       throw new Error(
-        "Private mode requires LSKY_ACCESS_TOKEN or both LSKY_USERNAME and LSKY_PASSWORD."
+        "Private mode requires a token, a cached token file, or both LSKY_USERNAME and LSKY_PASSWORD."
       );
     }
 
-    if (!forceRefresh && this.loginPromise) {
-      return this.loginPromise;
+    if (this.tokenPromise) {
+      return this.tokenPromise;
     }
 
-    this.loginPromise = this.login().finally(() => {
-      this.loginPromise = null;
+    this.tokenPromise = this.login().finally(() => {
+      this.tokenPromise = null;
     });
 
-    return this.loginPromise;
+    return this.tokenPromise;
   }
 
   async login() {
@@ -215,7 +209,7 @@ class LskyClient {
       throw new Error("Lsky login succeeded but no token was returned.");
     }
 
-    this.cachedToken = token;
+    await this.storeAccessToken(token);
     return token;
   }
 
@@ -283,7 +277,7 @@ class LskyClient {
       responseType = "json",
       bodyType = "json",
       redirect = "follow",
-      useApiPrefix = this.config.authMode === "api",
+      useApiPrefix = false,
       allowStatuses = []
     } = options;
 
@@ -440,6 +434,90 @@ class LskyClient {
       .map(([name, value]) => `${name}=${value}`)
       .join("; ");
   }
+
+  canLoginWithCredentials() {
+    return Boolean(this.config.username && this.config.password);
+  }
+
+  getConfiguredAccessToken() {
+    if (this.ignoreConfiguredAccessToken) {
+      return "";
+    }
+
+    return this.config.accessToken || "";
+  }
+
+  async invalidateAccessToken() {
+    this.cachedToken = "";
+    this.storedToken = "";
+    this.storedTokenLoaded = true;
+    this.ignoreConfiguredAccessToken = true;
+    await this.clearStoredToken();
+  }
+
+  async loadStoredToken() {
+    if (this.storedTokenLoaded) {
+      return this.storedToken;
+    }
+
+    try {
+      const raw = await fs.readFile(this.config.tokenStoragePath, "utf8");
+      const token = parseStoredToken(raw);
+      this.storedToken = token;
+      this.storedTokenLoaded = true;
+      return token;
+    } catch (error) {
+      this.storedTokenLoaded = true;
+      this.storedToken = "";
+
+      if (error && error.code === "ENOENT") {
+        return "";
+      }
+
+      console.warn(
+        `Unable to read cached Lsky token from ${this.config.tokenStoragePath}: ${error.message}`
+      );
+      return "";
+    }
+  }
+
+  async storeAccessToken(token) {
+    this.cachedToken = token;
+    this.storedToken = token;
+    this.storedTokenLoaded = true;
+
+    const payload = JSON.stringify(
+      {
+        token,
+        updatedAt: new Date().toISOString()
+      },
+      null,
+      2
+    );
+
+    await fs.mkdir(path.dirname(this.config.tokenStoragePath), {
+      recursive: true
+    });
+    await fs.writeFile(this.config.tokenStoragePath, payload, {
+      mode: 0o600
+    });
+  }
+
+  async clearStoredToken() {
+    try {
+      await fs.rm(this.config.tokenStoragePath, {
+        force: true
+      });
+    } catch (error) {
+      if (error && error.code === "ENOENT") {
+        return;
+      }
+
+      console.warn(
+        `Unable to clear cached Lsky token at ${this.config.tokenStoragePath}: ${error.message}`
+      );
+    }
+  }
 }
 
 function safeParseJson(text) {
@@ -449,6 +527,24 @@ function safeParseJson(text) {
     return {
       raw: text
     };
+  }
+}
+
+function parseStoredToken(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  if (!trimmed.startsWith("{")) {
+    return trimmed;
+  }
+
+  try {
+    const payload = JSON.parse(trimmed);
+    return typeof payload?.token === "string" ? payload.token : "";
+  } catch (_error) {
+    return "";
   }
 }
 
